@@ -1,3 +1,35 @@
+# secrets
+.env
+.env.local
+.env.*.local
+secrets/
+*.pem
+
+# python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# node
+node_modules/
+.next/
+out/
+next-env.d.ts
+
+# editors / os
+.vscode/
+.idea/
+.vs/
+*.tsbuildinfo
+*.csproj.user
+.DS_Store
+Thumbs.db
+obj
+bin
+.claude/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

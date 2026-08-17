@@ -1,0 +1,119 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+/*
+ * Design tokens for the PR Review Agent dashboard.
+ *
+ * Palette is warm paper / warm copper, not shadcn's stock zinc defaults —
+ * light mode only, reads like paper and ink. Accent is used sparingly —
+ * primary actions, active states, the one thing that needs attention.
+ *
+ * Severity and pipeline-state colors are deliberately separate from the
+ * accent so a CRITICAL badge never gets confused for "click me".
+ */
+:root {
+  --background: #f3f1ec;
+  --foreground: #18181a;
+  --card: #ffffff;
+  --card-foreground: #18181a;
+  --popover: #ffffff;
+  --popover-foreground: #18181a;
+  --primary: #c8672e;
+  --primary-foreground: #fdf9f5;
+  --secondary: #ebe8e1;
+  --secondary-foreground: #18181a;
+  --muted: #ebe8e1;
+  --muted-foreground: #7a7770;
+  --accent: #ebe8e1;
+  --accent-foreground: #18181a;
+  --destructive: #b3261e;
+  --destructive-foreground: #fdf9f5;
+  --border: #d9d5cc;
+  --input: #d9d5cc;
+  --ring: #c8672e;
+  --radius: 0.625rem;
+
+  /* Severity ramp: findings surfaced by the review agents. */
+  --severity-critical: #b91c1c;
+  --severity-high: #b45309;
+  --severity-medium: #92720c;
+  --severity-low: #1a7a4c;
+  --severity-info: #6b7280;
+
+  /* Pipeline-state ramp: where a pull request sits in the review flow. */
+  --state-open: #6b7280;
+  --state-processing: #2563eb;
+  --state-awaiting-approval: #b45309;
+  --state-posted: #1a7a4c;
+  --state-rejected: #78716c;
+  --state-cancelled: #78716c;
+  --state-failed: #b91c1c;
+
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas,
+    monospace;
+}
+
+@theme inline {
+  --font-heading: var(--font-sans);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --color-severity-critical: var(--severity-critical);
+  --color-severity-high: var(--severity-high);
+  --color-severity-medium: var(--severity-medium);
+  --color-severity-low: var(--severity-low);
+  --color-severity-info: var(--severity-info);
+  --color-state-open: var(--state-open);
+  --color-state-processing: var(--state-processing);
+  --color-state-awaiting-approval: var(--state-awaiting-approval);
+  --color-state-posted: var(--state-posted);
+  --color-state-rejected: var(--state-rejected);
+  --color-state-cancelled: var(--state-cancelled);
+  --color-state-failed: var(--state-failed);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+}
+
+/* Tabular numerics read as a column, not a ragged edge, in cost/confidence
+   columns and timestamps. */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}

@@ -1,0 +1,118 @@
+name: pr-review-agent
+
+services:
+  # The relational + time-series spine: TimescaleDB for the events hypertable
+  # and its continuous aggregates. Code-memory (embedding + vector search)
+  # lives outside this stack entirely, in a separately-run mem0 server
+  # container - see MEM0_BASE_URL below.
+  postgres:
+    image: timescale/timescaledb-ha:pg16
+    environment:
+      POSTGRES_USER: prreview
+      POSTGRES_PASSWORD: prreview
+      POSTGRES_DB: prreview
+      # A second database so `pytest` never truncates your development data.
+      POSTGRES_MULTIPLE_DATABASES: prreview_test
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U prreview -d prreview"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: ./backend
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgresql://prreview:prreview@postgres:5432/prreview
+      REDIS_URL: redis://redis:6379/0
+    # Bind-mounted read-only so the service principal's private key never
+    # gets baked into the image. Source path comes from the host env var
+    # below (set it in .env); no-op when ADO_AUTH_MODE=pat.
+    volumes:
+      - ${ADO_CLIENT_CERTIFICATE_HOST_PATH:-./secrets/ado-service-principal.pem}:/run/secrets/ado-service-principal.pem:ro
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  worker:
+    build:
+      context: ./backend
+    command: ["arq", "app.service.queue.WorkerSettings"]
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgresql://prreview:prreview@postgres:5432/prreview
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ${ADO_CLIENT_CERTIFICATE_HOST_PATH:-./secrets/ado-service-principal.pem}:/run/secrets/ado-service-principal.pem:ro
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  # The polling trigger, and the default way a review starts. Asks Azure DevOps
+  # what is open instead of waiting to be told, so no public URL or tunnel is
+  # needed. Claims work through the same idempotency row as the webhook, so
+  # running both triggers together still reviews a pull request exactly once.
+  poller:
+    build:
+      context: ./backend
+    command:
+      - python
+      - -m
+      - app.contracts.triggers
+      - --interval
+      - "${POLL_INTERVAL_SECONDS:-60}"
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgresql://prreview:prreview@postgres:5432/prreview
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ${ADO_CLIENT_CERTIFICATE_HOST_PATH:-./secrets/ado-service-principal.pem}:/run/secrets/ado-service-principal.pem:ro
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    environment:
+      API_URL: http://api:8000
+    ports:
+      - "3001:3000"
+    restart: unless-stopped
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  redisdata:

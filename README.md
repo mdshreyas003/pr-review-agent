@@ -1,20 +1,26 @@
-# Introduction 
-TODO: Give a short introduction of your project. Let this section explain the objectives or the motivation behind this project. 
+# AI PR Review Agent — Azure DevOps
 
-# Getting Started
-TODO: Guide users through getting your code up and running on their own system. In this section you can talk about:
-1.	Installation process
-2.	Software dependencies
-3.	Latest releases
-4.	API references
+Multi-agent pull-request reviewer for Azure DevOps Repos. Five specialists (security, quality,
+tests, docs, Boards story) review each PR grounded in hybrid RAG over the repository; findings are
+deduped, confidence-scored, gated for human approval, and posted back as inline comment threads.
+Every step lands in a time-ordered audit spine that feeds the dashboard.
 
-# Build and Test
-TODO: Describe and show how to build your code and run the tests. 
+FastAPI backend + Next.js dashboard, both containerized; Postgres and Redis under them.
 
-# Contribute
-TODO: Explain how other users and developers can contribute to make your code better. 
+## Run
 
-If you want to learn more about creating good readme files then refer the following [guidelines](https://docs.microsoft.com/en-us/azure/devops/repos/git/create-a-readme?view=azure-devops). You can also seek inspiration from the below readme files:
-- [ASP.NET Core](https://github.com/aspnet/Home)
-- [Visual Studio Code](https://github.com/Microsoft/vscode)
-- [Chakra Core](https://github.com/Microsoft/ChakraCore)
+```bash
+cp .env.example .env   # fill FOUNDRY_*, ADO_* (PAT or service principal), ADO_WEBHOOK_PASSWORD
+docker compose up -d --build
+```
+
+Dashboard <http://localhost:3001> · API health <http://localhost:8000/health> · OpenAPI `/docs`.
+Trigger reviews via an ADO service hook to `/webhooks/azure-devops`, or without a public URL:
+`cd backend && python -m app.contracts.triggers --project MyProject --interval 60`.
+
+## Specs
+
+- LLM: Kimi K2 on Azure Foundry (default) or Claude (`LLM_PROVIDER=anthropic`); per-agent `MODEL_*` routing; prompt caching.
+- Retrieval: Postgres pgvector HNSW + full-text, fused with reciprocal rank fusion (default); mem0 optional via `MEMORY_BACKEND=mem0`. TimescaleDB optional.
+- Safety: `REQUIRE_HUMAN_APPROVAL=true` by default, `DAILY_BUDGET_USD` hard cap, idempotent triggers, per-specialist degradation.
+- Deploy: Docker Compose (API, worker, dashboard, Postgres, Redis) — see `docker-compose.yml`.
