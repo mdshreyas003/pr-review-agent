@@ -1,6 +1,6 @@
 # AI PR Review Agent — Azure DevOps
 
-GitHub mirror: <https://github.com/mdshreyas003/code-review-agent> · Architecture docs: <https://mdshreyas003.github.io/code-review-agent/>
+GitHub mirror: <https://github.com/mdshreyas003/pr-review-agent> · Architecture docs: <https://mdshreyas003.github.io/pr-review-agent/>
 
 Multi-agent pull-request reviewer for Azure DevOps Repos. Five specialists (security, quality,
 tests, docs, Boards story) review each PR grounded in hybrid RAG over the repository; findings are
