@@ -1,0 +1,1099 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1"><style>:root{color-scheme:light}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}</style></head><body>
+<title>PR Review Agent — Architecture</title>
+<style>
+:root{
+  --bg:#f3f1ec;
+  --surface:#ffffff;
+  --ink:#18181a;
+  --ink-dim:#7a7770;
+  --line:#d9d5cc;
+  --line-soft:#e7e3da;
+  --accent:#c8672e;
+  --accent-soft:#c8672e22;
+  --sans: -apple-system, ui-sans-serif, "Segoe UI", system-ui, sans-serif;
+  --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+}
+/* Deliberately single-theme: this is a technical drawing on paper, not a
+   UI that should invert. Light regardless of OS preference or the viewer
+   toggle - both are asked to stay out of the way rather than left unhandled. */
+:root[data-theme="dark"],
+:root[data-theme="light"]{
+  --bg:#f3f1ec; --surface:#ffffff; --ink:#18181a; --ink-dim:#7a7770;
+  --line:#d9d5cc; --line-soft:#e7e3da; --accent:#c8672e; --accent-soft:#c8672e22;
+}
+
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;}
+body{
+  background:var(--bg); color:var(--ink); font-family:var(--sans);
+  overflow-x:hidden;
+}
+
+.mark{
+  position:fixed; top:26px; left:32px; z-index:5;
+  font-family:var(--mono); font-size:11px; letter-spacing:.16em;
+  text-transform:uppercase; color:var(--ink-dim);
+}
+.mark b{ color:var(--ink); font-weight:600; }
+
+.progress{
+  position:fixed; right:28px; top:50%; transform:translateY(-50%);
+  z-index:5; display:flex; flex-direction:column; gap:14px;
+}
+.progress a{
+  width:7px; height:7px; border-radius:50%; background:var(--line);
+  display:block; transition:background 200ms ease, transform 200ms ease;
+}
+.progress a.active{ background:var(--accent); transform:scale(1.35); }
+
+.rail{
+  height:100vh; overflow-y:scroll; scroll-snap-type:y mandatory;
+  scrollbar-width:none;
+}
+.rail::-webkit-scrollbar{ display:none; }
+
+.panel{
+  min-height:100vh; scroll-snap-align:start;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  position:relative; padding:60px 24px;
+}
+
+.panel .frame{
+  width:100%; max-width:1040px; display:flex; flex-direction:column;
+  align-items:center; gap:6px;
+}
+
+.eyebrow{
+  display:flex; align-items:baseline; gap:14px; margin-bottom:8px;
+}
+.eyebrow .num{
+  font-family:var(--mono); font-size:13px; color:var(--accent); font-weight:600;
+  letter-spacing:.04em;
+}
+.eyebrow .label{
+  font-family:var(--mono); font-size:11px; letter-spacing:.2em;
+  text-transform:uppercase; color:var(--ink-dim);
+}
+
+h1{
+  font-size:clamp(26px,3.6vw,42px); font-weight:650; letter-spacing:-0.01em;
+  margin:0 0 30px; text-align:center; text-wrap:balance;
+}
+
+.diagram{ width:100%; }
+.diagram svg{ width:100%; height:auto; display:block; overflow:visible; }
+
+.node-label{
+  font-family:var(--mono); font-size:11.5px; letter-spacing:.05em;
+  fill:var(--ink-dim); text-transform:uppercase;
+}
+.node-label.on{ fill:var(--ink); font-weight:600; }
+
+.stroke-line{ stroke:var(--line); }
+.stroke-dim{ stroke:var(--ink-dim); }
+.stroke-accent{ stroke:var(--accent); }
+.fill-surface{ fill:var(--surface); }
+.fill-ink{ fill:var(--ink); }
+.fill-dim{ fill:var(--ink-dim); }
+.fill-accent{ fill:var(--accent); }
+.fill-accent-soft{ fill:var(--accent-soft); }
+.fill-line{ fill:var(--line); }
+
+.caption{
+  margin-top:32px; max-width:58ch; text-align:center;
+  font-size:14.5px; line-height:1.55; color:var(--ink-dim);
+}
+.caption b{ color:var(--ink); font-weight:600; }
+
+.hot{ cursor:pointer; }
+.hot:hover .edge,
+.hot:focus-visible .edge{ stroke:var(--accent); }
+.hot:hover .dot,
+.hot:focus-visible .dot{ fill:var(--accent); }
+.hot:hover text,
+.hot:focus-visible text{ fill:var(--accent); }
+.hot:focus{ outline:none; }
+
+.tip{
+  position:fixed; z-index:20; max-width:270px;
+  background:var(--ink); color:var(--bg);
+  border-radius:9px; padding:12px 14px;
+  font-size:12.5px; line-height:1.5;
+  box-shadow:0 10px 30px -8px rgba(20,18,14,.35);
+  opacity:0; transform:translate(-50%,-100%) translateY(-10px);
+  transition:opacity 140ms ease, transform 140ms ease;
+  pointer-events:none;
+}
+.tip.show{ opacity:1; transform:translate(-50%,-100%) translateY(-16px); }
+.tip .t-title{
+  display:block; font-family:var(--mono); font-size:10px; letter-spacing:.1em;
+  text-transform:uppercase; color:var(--accent); margin-bottom:5px;
+}
+.tip .t-body{ display:block; color:var(--bg); opacity:.92; }
+.tip .t-points{ margin:2px 0 0; padding:0; list-style:none; }
+.tip .t-points li{
+  position:relative; padding-left:13px; margin-bottom:5px; color:var(--bg); opacity:.92;
+}
+.tip .t-points li:last-child{ margin-bottom:0; }
+.tip .t-points li::before{
+  content:"–"; position:absolute; left:0; color:var(--accent); opacity:1;
+}
+.tip .t-points b{ color:var(--bg); opacity:1; font-weight:600; }
+@media (prefers-reduced-motion: reduce){
+  .tip{ transition:none; }
+}
+
+@media (prefers-reduced-motion: no-preference){
+  .flow{ stroke-dasharray:3 7; animation:dash 14s linear infinite; }
+  @keyframes dash{ to{ stroke-dashoffset:-400; } }
+  .flowfast{ stroke-dasharray:3 6; animation:dash 6s linear infinite; }
+  .pulse{ animation:pulse 3.2s ease-in-out infinite; }
+  @keyframes pulse{ 0%,100%{ opacity:1; } 50%{ opacity:.55; } }
+  .spin{ animation:spin 22s linear infinite; transform-origin:center; }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+}
+
+.statements{
+  display:flex; flex-direction:column; align-items:center; gap:26px;
+  margin:6px 0 56px;
+}
+.statements p{
+  margin:0; font-size:clamp(18px,2.4vw,25px); font-weight:560;
+  letter-spacing:-0.005em; color:var(--ink); text-align:center; text-wrap:balance;
+}
+.stack-line{
+  font-family:var(--mono); font-size:12px; color:var(--ink-dim);
+  text-align:center; max-width:64ch; line-height:1.9; letter-spacing:.01em;
+}
+.stack-line .sep{ color:var(--line); margin:0 10px; }
+
+.legend{
+  display:flex; flex-wrap:wrap; justify-content:center; gap:18px 26px;
+  margin-top:6px; font-family:var(--mono); font-size:10.5px;
+  letter-spacing:.03em; color:var(--ink-dim); text-transform:uppercase;
+}
+.legend span{ display:inline-flex; align-items:center; gap:7px; }
+.legend i{ width:10px; height:10px; border-radius:3px; display:inline-block; }
+
+@media (max-width:640px){
+  .mark{ font-size:10px; }
+  .caption{ font-size:13px; }
+}
+</style>
+
+<div class="mark"><b>PR&nbsp;Review&nbsp;Agent</b> · Architecture</div>
+<div class="progress">
+  <a href="#sys" class="dot active" data-i="0"></a>
+  <a href="#loop" class="dot" data-i="1"></a>
+  <a href="#engine" class="dot" data-i="2"></a>
+  <a href="#agent" class="dot" data-i="3"></a>
+  <a href="#memory" class="dot" data-i="4"></a>
+  <a href="#explorer" class="dot" data-i="5"></a>
+  <a href="#stack" class="dot" data-i="6"></a>
+</div>
+
+<div class="tip" id="tip" role="tooltip"></div>
+
+<div class="rail" id="rail">
+
+  <!-- ============================================================= 01 -->
+  <section class="panel" id="sys">
+    <div class="frame">
+      <div class="eyebrow"><span class="num">01</span><span class="label">System</span></div>
+      <h1>One loop, five parts</h1>
+
+      <div class="diagram">
+        <svg viewBox="0 0 900 340" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L6,3 L0,6 Z" class="fill-dim"/>
+            </marker>
+            <marker id="arrowAccent" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L6,3 L0,6 Z" class="fill-accent"/>
+            </marker>
+          </defs>
+
+          <path d="M 46 90 Q 20 90 20 130 L 20 210 Q 20 250 46 250" fill="none" class="stroke-line" stroke-width="1.5"/>
+          <text x="4" y="170" class="node-label" transform="rotate(-90 4 170)" text-anchor="middle">Repos + Boards</text>
+
+          <path d="M 50 130 Q 130 130 170 148" fill="none" class="stroke-dim flow" stroke-width="1.3" marker-end="url(#arrow)"/>
+          <path d="M 560 108 Q 300 40 52 122" fill="none" class="stroke-accent flow" stroke-width="1.3" marker-end="url(#arrowAccent)"/>
+
+          <g class="hot" tabindex="0" data-id="trigger">
+            <circle cx="190" cy="170" r="26" class="fill-surface stroke-line edge" stroke-width="1.3"/>
+            <circle cx="190" cy="170" r="4" class="fill-dim dot"/>
+          </g>
+          <text x="190" y="216" class="node-label" text-anchor="middle">Trigger</text>
+
+          <path d="M 216 170 L 320 170" class="stroke-line flow" stroke-width="1.3" marker-end="url(#arrow)"/>
+
+          <rect x="322" y="148" width="60" height="44" rx="10" class="fill-surface stroke-line" stroke-width="1.3"/>
+          <line x1="332" y1="160" x2="372" y2="160" class="stroke-dim" stroke-width="1"/>
+          <line x1="332" y1="170" x2="372" y2="170" class="stroke-dim" stroke-width="1"/>
+          <line x1="332" y1="180" x2="360" y2="180" class="stroke-dim" stroke-width="1"/>
+          <text x="352" y="216" class="node-label" text-anchor="middle">Queue</text>
+
+          <path d="M 384 170 L 480 140" class="stroke-line flow" stroke-width="1.3" marker-end="url(#arrow)"/>
+
+          <circle cx="560" cy="110" r="52" class="fill-accent-soft"/>
+          <circle cx="560" cy="110" r="40" class="fill-surface stroke-accent pulse" stroke-width="1.6"/>
+          <circle cx="560" cy="110" r="6" class="fill-accent"/>
+          <text x="560" y="176" class="node-label on" text-anchor="middle">Review Agent</text>
+
+          <path d="M 604 128 Q 680 165 700 170" class="stroke-line flow" stroke-width="1.3" marker-end="url(#arrow)"/>
+
+          <g transform="translate(700,140)">
+            <path d="M0,6 A30,8 0 0 1 60,6 L60,54 A30,8 0 0 1 0,54 Z" class="fill-surface stroke-line" stroke-width="1.3"/>
+            <ellipse cx="30" cy="6" rx="30" ry="8" class="fill-surface stroke-line" stroke-width="1.3"/>
+          </g>
+          <text x="730" y="216" class="node-label" text-anchor="middle">Store</text>
+
+          <path d="M 730 200 L 730 250" class="stroke-line" stroke-width="1.3" marker-end="url(#arrow)"/>
+          <path d="M 700 278 Q 500 320 384 182" fill="none" class="stroke-dim" stroke-width="1" stroke-dasharray="2 5" marker-end="url(#arrow)"/>
+
+          <rect x="694" y="256" width="72" height="46" rx="6" class="fill-surface stroke-line" stroke-width="1.3"/>
+          <line x1="704" y1="268" x2="756" y2="268" class="stroke-dim" stroke-width="1"/>
+          <line x1="704" y1="278" x2="742" y2="278" class="stroke-dim" stroke-width="1"/>
+          <line x1="704" y1="288" x2="750" y2="288" class="stroke-dim" stroke-width="1"/>
+          <text x="730" y="322" class="node-label" text-anchor="middle">Dashboard</text>
+        </svg>
+      </div>
+
+      <p class="caption">
+        A pull request arrives, is claimed <b>once</b>, reviewed, and remembered —
+        a human decides what leaves the loop.
+        <span style="display:block; margin-top:6px; font-size:12.5px;">Hover Trigger for detail.</span>
+      </p>
+    </div>
+  </section>
+
+  <!-- ============================================================= 02 : LOOP (new) -->
+  <section class="panel" id="loop">
+    <div class="frame">
+      <div class="eyebrow"><span class="num">02</span><span class="label">Loop</span></div>
+      <h1>Claimed once, resumable anywhere</h1>
+
+      <div class="diagram">
+        <svg viewBox="0 0 900 460" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="arrowL" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L6,3 L0,6 Z" class="fill-dim"/>
+            </marker>
+            <marker id="arrowLa" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L6,3 L0,6 Z" class="fill-accent"/>
+            </marker>
+          </defs>
+
+          <!-- ring of five stages, orbiting a checkpoint core -->
+          <circle cx="450" cy="190" r="150" fill="none" class="stroke-line" stroke-width="1" stroke-dasharray="2 6"/>
+
+          <!-- stage nodes on the ring, in execution order -->
+          <g class="hot" tabindex="0" data-id="l-claim">
+            <circle cx="450" cy="40" r="22" class="fill-surface stroke-line edge" stroke-width="1.3"/>
+            <circle cx="450" cy="40" r="3.5" class="fill-dim dot"/>
+          </g>
+          <text x="450" y="10" class="node-label" text-anchor="middle">Claim</text>
+
+          <g class="hot" tabindex="0" data-id="l-prepare">
+            <circle cx="592" cy="98" r="22" class="fill-surface stroke-line edge" stroke-width="1.3"/>
+            <circle cx="592" cy="98" r="3.5" class="fill-dim dot"/>
+          </g>
+          <text x="628" y="80" class="node-label" text-anchor="middle">Prepare</text>
+
+          <g class="hot" tabindex="0" data-id="l-fanout">
+            <circle cx="592" cy="282" r="22" class="fill-surface stroke-line edge" stroke-width="1.3"/>
+            <circle cx="592" cy="282" r="3.5" class="fill-dim dot"/>
+          </g>
+          <text x="638" y="300" class="node-label" text-anchor="middle">Fan-out</text>
+
+          <g class="hot" tabindex="0" data-id="l-gate">
+            <circle cx="450" cy="340" r="22" class="fill-surface stroke-accent edge" stroke-width="1.5"/>
+            <circle cx="450" cy="340" r="3.5" class="fill-accent dot"/>
+          </g>
+          <text x="450" y="378" class="node-label on" text-anchor="middle">Gate</text>
+
+          <g class="hot" tabindex="0" data-id="l-publish">
+            <circle cx="308" cy="282" r="22" class="fill-surface stroke-line edge" stroke-width="1.3"/>
+            <circle cx="308" cy="282" r="3.5" class="fill-dim dot"/>
+          </g>
+          <text x="262" y="300" class="node-label" text-anchor="middle">Publish</text>
+
+          <!-- arc arrows connecting the ring, in order -->
+          <path d="M 469 45 A 150 150 0 0 1 585 78" fill="none" class="stroke-line flow" stroke-width="1.2" marker-end="url(#arrowL)"/>
+          <path d="M 597 120 A 150 150 0 0 1 597 260" fill="none" class="stroke-line flow" stroke-width="1.2" marker-end="url(#arrowL)"/>
+          <path d="M 579 301 A 150 150 0 0 1 469 337" fill="none" class="stroke-line flow" stroke-width="1.2" marker-end="url(#arrowL)"/>
+          <path d="M 431 337 A 150 150 0 0 1 322 300" fill="none" class="stroke-line flow" stroke-width="1.2" marker-end="url(#arrowL)"/>
+
+          <!-- checkpoint core -->
+          <g transform="translate(450,190)">
+            <g class="hot" tabindex="0" data-id="l-checkpoint">
+              <ellipse cx="0" cy="-24" rx="38" ry="9" class="fill-surface stroke-line edge" stroke-width="1.3"/>
+              <path d="M -38,-24 L -38,20 A 38,9 0 0 0 38,20 L 38,-24" class="fill-surface stroke-line edge" stroke-width="1.3"/>
+            </g>
+            <text x="0" y="52" class="node-label" text-anchor="middle">Checkpoint</text>
+          </g>
+
+          <!-- spokes: each stage saves to the checkpoint after it runs -->
+          <g class="stroke-line" stroke-width="1" stroke-dasharray="1 4">
+            <line x1="450" y1="62" x2="450" y2="152"/>
+            <line x1="573" y1="110" x2="480" y2="172"/>
+            <line x1="573" y1="270" x2="480" y2="208"/>
+            <line x1="308" y1="260" x2="420" y2="208"/>
+          </g>
+
+          <!-- resume loop-back: worker restart re-enters at the first incomplete stage -->
+          <path d="M 490 190 Q 700 190 700 60 Q 700 -30 470 25"
+                fill="none" class="stroke-accent flowfast" stroke-width="1.4" marker-end="url(#arrowLa)"/>
+          <g class="hot" tabindex="0" data-id="l-resume">
+            <text x="706" y="120" class="node-label on" text-anchor="start">Resume</text>
+            <text x="706" y="134" class="node-label" text-anchor="start" style="font-size:9px">on worker restart</text>
+          </g>
+
+          <!-- cancellation branch, guarded before every stage -->
+          <path d="M 450 190 Q 210 260 190 380" fill="none" class="stroke-dim" stroke-width="1" stroke-dasharray="2 5" marker-end="url(#arrowL)"/>
+          <g class="hot" tabindex="0" data-id="l-cancel">
+            <circle cx="176" cy="398" r="16" class="fill-surface stroke-line edge" stroke-width="1.3"/>
+            <path d="M 170,392 L 182,404 M 182,392 L 170,404" class="stroke-dim" stroke-width="1.4"/>
+          </g>
+          <text x="176" y="430" class="node-label" text-anchor="middle">Cancelled</text>
+        </svg>
+      </div>
+
+      <p class="caption">
+        The same commit can only be <b>claimed once</b> — webhook or poller, whichever gets there
+        first. A dead worker resumes from the last checkpoint instead of restarting;
+        a cancelled task stops between stages, never mid-model-call.
+        <span style="display:block; margin-top:6px; font-size:12.5px;">Hover a node for detail.</span>
+      </p>
+    </div>
+  </section>
+
+  <!-- ============================================================= 03 : AGENTS ENGINE (new) -->
+  <section class="panel" id="engine">
+    <div class="frame">
+      <div class="eyebrow"><span class="num">03</span><span class="label">Agents Engine</span></div>
+      <h1>A protocol, not a framework</h1>
+
+      <div class="diagram">
+        <svg viewBox="0 0 900 380" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="arrowE" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L6,3 L0,6 Z" class="fill-dim"/>
+            </marker>
+            <marker id="arrowEa" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L6,3 L0,6 Z" class="fill-accent"/>
+            </marker>
+          </defs>
+
+          <!-- the review as a named list of nodes -->
+          <text x="30" y="46" class="node-label on" text-anchor="start" style="font-size:10px">build_nodes()</text>
+          <rect x="26" y="58" width="150" height="150" rx="10" fill="none" class="stroke-line" stroke-width="1" stroke-dasharray="2 4"/>
+          <g class="hot" tabindex="0" data-id="e-node">
+            <rect x="42" y="72" width="118" height="24" rx="5" class="fill-surface stroke-line edge" stroke-width="1.2"/>
+            <text x="101" y="88" class="node-label" text-anchor="middle" style="font-size:9px">prepare</text>
+          </g>
+          <rect x="42" y="100" width="118" height="24" rx="5" class="fill-surface stroke-line" stroke-width="1.2"/>
+          <text x="101" y="116" class="node-label" text-anchor="middle" style="font-size:9px">fan_out</text>
+          <rect x="42" y="128" width="118" height="24" rx="5" class="fill-surface stroke-line" stroke-width="1.2"/>
+          <text x="101" y="144" class="node-label" text-anchor="middle" style="font-size:9px">aggregate</text>
+          <rect x="42" y="156" width="118" height="24" rx="5" class="fill-surface stroke-line" stroke-width="1.2"/>
+          <text x="101" y="172" class="node-label" text-anchor="middle" style="font-size:9px">gate</text>
+          <rect x="42" y="184" width="118" height="24" rx="5" class="fill-surface stroke-line" stroke-width="1.2"/>
+          <text x="101" y="200" class="node-label" text-anchor="middle" style="font-size:9px">publish</text>
+          <text x="101" y="228" class="node-label" text-anchor="middle">Node(name, fn, optional)</text>
+
+          <!-- into the engine -->
+          <path d="M 176 132 L 280 132" class="stroke-line flow" stroke-width="1.3" marker-end="url(#arrowE)"/>
+
+          <g class="hot" tabindex="0" data-id="e-native">
+            <circle cx="340" cy="132" r="56" class="fill-accent-soft"/>
+            <circle cx="340" cy="132" r="44" class="fill-surface stroke-accent edge pulse" stroke-width="1.7"/>
+          </g>
+          <text x="340" y="128" class="node-label on" text-anchor="middle" style="font-size:10px">Native</text>
+          <text x="340" y="142" class="node-label on" text-anchor="middle" style="font-size:10px">Engine</text>
+          <text x="340" y="204" class="node-label" text-anchor="middle">a few dozen lines of asyncio</text>
+
+          <!-- guard loop: cancellation check before each node -->
+          <path d="M 340 176 Q 260 250 340 268 Q 420 250 340 176" fill="none" class="stroke-dim" stroke-width="1" stroke-dasharray="1 4"/>
+          <g class="hot" tabindex="0" data-id="e-guard">
+            <circle cx="340" cy="268" r="15" class="fill-surface stroke-line edge" stroke-width="1.2"/>
+            <path d="M334,262 L346,274 M346,262 L334,274" class="stroke-dim" stroke-width="1.3"/>
+          </g>
+          <text x="340" y="300" class="node-label" text-anchor="middle">_guarded()</text>
+
+          <!-- optional node failure branch -->
+          <path d="M 384 118 Q 470 60 540 66" fill="none" class="stroke-dim" stroke-width="1" stroke-dasharray="2 5" marker-end="url(#arrowE)"/>
+          <g class="hot" tabindex="0" data-id="e-optional">
+            <text x="556" y="62" class="node-label" text-anchor="start">optional=True</text>
+            <text x="556" y="76" class="node-label" text-anchor="start" style="font-size:9px">warn, keep going</text>
+          </g>
+
+          <path d="M 384 146 Q 470 200 540 196" fill="none" class="stroke-accent" stroke-width="1.3" marker-end="url(#arrowEa)"/>
+          <g class="hot" tabindex="0" data-id="e-required">
+            <text x="556" y="192" class="node-label on" text-anchor="start">optional=False</text>
+            <text x="556" y="206" class="node-label" text-anchor="start" style="font-size:9px">checkpoint, then raise</text>
+          </g>
+
+          <!-- checkpointer plugged into the engine -->
+          <path d="M 340 176 L 340 250" class="stroke-line" stroke-width="0" />
+          <path d="M 388 158 Q 480 300 560 300" fill="none" class="stroke-line flow" stroke-width="1.2" marker-end="url(#arrowE)"/>
+          <g class="hot" tabindex="0" data-id="e-checkpointer">
+            <rect x="562" y="278" width="120" height="44" rx="8" class="fill-surface stroke-line edge" stroke-width="1.3"/>
+            <text x="622" y="296" class="node-label" text-anchor="middle" style="font-size:9px">Checkpointer</text>
+            <text x="622" y="310" class="node-label" text-anchor="middle" style="font-size:8px">protocol</text>
+          </g>
+
+          <!-- swap-in: alternative engines behind the same protocol -->
+          <path d="M 344 88 Q 500 -10 760 60" fill="none" class="stroke-line" stroke-width="1" stroke-dasharray="2 5"/>
+          <g class="hot" tabindex="0" data-id="e-swap">
+            <rect x="726" y="34" width="140" height="60" rx="10" fill="none" class="stroke-line" stroke-width="1" stroke-dasharray="2 4"/>
+            <text x="796" y="58" class="node-label" text-anchor="middle" style="font-size:9px">Temporal /</text>
+            <text x="796" y="72" class="node-label" text-anchor="middle" style="font-size:9px">LangGraph</text>
+            <text x="796" y="86" class="node-label" text-anchor="middle" style="font-size:8px">same WorkflowEngine</text>
+          </g>
+        </svg>
+      </div>
+
+      <p class="caption">
+        A review is an ordered list of named nodes; the engine that runs them is an
+        interchangeable detail. <b>Native</b> is a few dozen lines of asyncio — the right
+        size for a five-way fan-out with one checkpoint between phases.
+        <span style="display:block; margin-top:6px; font-size:12.5px;">Hover a node for detail.</span>
+      </p>
+    </div>
+  </section>
+
+  <!-- ============================================================= 04 -->
+  <section class="panel" id="agent">
+    <div class="frame">
+      <div class="eyebrow"><span class="num">04</span><span class="label">Specialists</span></div>
+      <h1>Five opinions, one verdict</h1>
+
+      <div class="diagram">
+        <svg viewBox="0 0 900 380" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="arrow2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L6,3 L0,6 Z" class="fill-dim"/>
+            </marker>
+            <marker id="arrow2a" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L6,3 L0,6 Z" class="fill-accent"/>
+            </marker>
+          </defs>
+
+          <g class="hot" tabindex="0" data-id="context">
+            <rect x="40" y="168" width="60" height="44" rx="8" class="fill-surface stroke-line edge" stroke-width="1.3"/>
+          </g>
+          <text x="70" y="234" class="node-label" text-anchor="middle">Context</text>
+
+          <g class="stroke-line flow" stroke-width="1.1" fill="none">
+            <path d="M100 175 Q 180 60 250 60" marker-end="url(#arrow2)"/>
+            <path d="M100 182 Q 180 115 250 115" marker-end="url(#arrow2)"/>
+            <path d="M100 190 Q 180 170 250 170" marker-end="url(#arrow2)"/>
+            <path d="M100 198 Q 180 225 250 225" marker-end="url(#arrow2)"/>
+            <path d="M100 205 Q 180 280 250 280" marker-end="url(#arrow2)"/>
+          </g>
+
+          <text x="264" y="24" class="node-label" text-anchor="middle" style="letter-spacing:.16em">5 SPECIALISTS</text>
+          <rect x="228" y="34" width="72" height="284" rx="18" fill="none" class="stroke-line" stroke-width="1" stroke-dasharray="2 4"/>
+
+          <g class="hot" tabindex="0" data-id="security">
+            <circle cx="264" cy="60" r="14" class="fill-surface stroke-line edge" stroke-width="1.3"/>
+            <circle cx="264" cy="60" r="3" class="fill-dim dot"/>
+            <text x="264" y="84" class="node-label" text-anchor="middle" style="font-size:9px">Security</text>
+          </g>
+          <g class="hot" tabindex="0" data-id="quality">
+            <circle cx="264" cy="115" r="14" class="fill-surface stroke-line edge" stroke-width="1.3"/>
+            <circle cx="264" cy="115" r="3" class="fill-dim dot"/>
+            <text x="264" y="139" class="node-label" text-anchor="middle" style="font-size:9px">Quality</text>
+          </g>
+          <g class="hot" tabindex="0" data-id="tests">
+            <circle cx="264" cy="170" r="14" class="fill-surface stroke-line edge" stroke-width="1.3"/>
+            <circle cx="264" cy="170" r="3" class="fill-dim dot"/>
+            <text x="264" y="194" class="node-label" text-anchor="middle" style="font-size:9px">Tests</text>
+          </g>
+          <g class="hot" tabindex="0" data-id="docs">
+            <circle cx="264" cy="225" r="14" class="fill-surface stroke-line edge" stroke-width="1.3"/>
+            <circle cx="264" cy="225" r="3" class="fill-dim dot"/>
+            <text x="264" y="249" class="node-label" text-anchor="middle" style="font-size:9px">Docs</text>
+          </g>
+          <g class="hot" tabindex="0" data-id="story">
+            <circle cx="264" cy="280" r="14" class="fill-surface stroke-line edge" stroke-width="1.3"/>
+            <circle cx="264" cy="280" r="3" class="fill-dim dot"/>
+            <text x="264" y="304" class="node-label" text-anchor="middle" style="font-size:9px">Story</text>
+          </g>
+          <g class="stroke-line flow" stroke-width="1.1" fill="none">
+            <path d="M278 60 Q 400 90 450 155" marker-end="url(#arrow2)"/>
+            <path d="M278 115 Q 380 130 450 162" marker-end="url(#arrow2)"/>
+            <path d="M278 170 L 450 170" marker-end="url(#arrow2)"/>
+            <path d="M278 225 Q 380 210 450 178" marker-end="url(#arrow2)"/>
+            <path d="M278 280 Q 400 250 450 185" marker-end="url(#arrow2)"/>
+          </g>
+
+          <g class="hot" tabindex="0" data-id="aggregate">
+            <circle cx="486" cy="170" r="30" class="fill-surface stroke-line edge" stroke-width="1.4"/>
+            <circle cx="486" cy="170" r="4" class="fill-dim dot"/>
+          </g>
+          <text x="486" y="222" class="node-label" text-anchor="middle">Aggregate</text>
+
+          <path d="M 516 170 L 590 170" class="stroke-line flow" stroke-width="1.3" marker-end="url(#arrow2)"/>
+
+          <g class="hot" tabindex="0" data-id="gate">
+            <circle cx="626" cy="170" r="44" class="fill-accent-soft"/>
+            <circle cx="626" cy="170" r="34" class="fill-surface stroke-accent edge pulse" stroke-width="1.8"/>
+          </g>
+          <text x="626" y="176" class="node-label on" text-anchor="middle" style="font-size:10px">Gate</text>
+          <text x="626" y="232" class="node-label" text-anchor="middle">Autonomy</text>
+
+          <path d="M 654 148 Q 720 80 780 66" fill="none" class="stroke-dim" stroke-width="1" stroke-dasharray="2 5" marker-end="url(#arrow2)"/>
+          <g class="hot" tabindex="0" data-id="publish">
+            <text x="800" y="62" class="node-label" text-anchor="start">Publish</text>
+            <text x="800" y="76" class="node-label" text-anchor="start" style="font-size:9px">(off by default)</text>
+          </g>
+
+          <path d="M 654 192 Q 720 260 780 274" fill="none" class="stroke-accent flow" stroke-width="1.5" marker-end="url(#arrow2a)"/>
+          <g class="hot" tabindex="0" data-id="human">
+            <text x="800" y="278" class="node-label on" text-anchor="start">Human</text>
+            <text x="800" y="292" class="node-label" text-anchor="start" style="font-size:9px">approval queue</text>
+          </g>
+        </svg>
+      </div>
+
+      <p class="caption">
+        Five specialists reason in parallel over the <b>same</b> grounded context;
+        the gate — not the model — decides who sees it first.
+        <span style="display:block; margin-top:6px; font-size:12.5px;">Hover a node for detail.</span>
+      </p>
+    </div>
+  </section>
+
+  <!-- ============================================================= 05 -->
+  <section class="panel" id="memory">
+    <div class="frame">
+      <div class="eyebrow"><span class="num">05</span><span class="label">Memory Strategy</span></div>
+      <h1>Chunk once, retrieve twice</h1>
+
+      <div class="diagram">
+        <svg viewBox="0 0 900 460" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="arrow3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L6,3 L0,6 Z" class="fill-dim"/>
+            </marker>
+            <marker id="arrow3a" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L6,3 L0,6 Z" class="fill-accent"/>
+            </marker>
+          </defs>
+
+          <!-- LANE A: indexing, background, top -->
+          <text x="30" y="30" class="node-label on" text-anchor="start" style="font-size:10px">INDEX (manual, on-demand)</text>
+
+          <g class="hot" tabindex="0" data-id="mm-repo">
+            <circle cx="50" cy="66" r="12" class="fill-surface stroke-line edge" stroke-width="1.2"/>
+          </g>
+          <text x="50" y="94" class="node-label" text-anchor="middle" style="font-size:9px">Repo tree</text>
+          <path d="M 62 66 L 130 66" class="stroke-line flow" stroke-width="1.1" marker-end="url(#arrow3)"/>
+
+          <g class="hot" tabindex="0" data-id="mm-boundary">
+            <rect x="132" y="48" width="92" height="36" rx="6" class="fill-surface stroke-line edge" stroke-width="1.2"/>
+          </g>
+          <text x="178" y="70" class="node-label" text-anchor="middle" style="font-size:9px">Boundary split</text>
+          <path d="M 224 66 L 292 66" class="stroke-line flow" stroke-width="1.1" marker-end="url(#arrow3)"/>
+
+          <g class="hot" tabindex="0" data-id="mm-hash">
+            <rect x="294" y="48" width="92" height="36" rx="6" class="fill-surface stroke-line edge" stroke-width="1.2"/>
+          </g>
+          <text x="340" y="70" class="node-label" text-anchor="middle" style="font-size:9px">Content hash</text>
+          <path d="M 386 66 L 454 66" class="stroke-line flow" stroke-width="1.1" marker-end="url(#arrow3)"/>
+          <text x="420" y="58" class="node-label" text-anchor="middle" style="font-size:8px">unchanged? skip</text>
+
+          <g class="hot" tabindex="0" data-id="mm-embed">
+            <rect x="456" y="48" width="92" height="36" rx="6" class="fill-surface stroke-line edge" stroke-width="1.2"/>
+          </g>
+          <text x="502" y="70" class="node-label" text-anchor="middle" style="font-size:9px">Embed batch</text>
+          <path d="M 548 66 L 610 66" class="stroke-line flow" stroke-width="1.1" marker-end="url(#arrow3)"/>
+
+          <g class="hot" tabindex="0" data-id="mm-reconcile">
+            <rect x="612" y="48" width="102" height="36" rx="6" class="fill-surface stroke-accent edge" stroke-width="1.4"/>
+          </g>
+          <text x="663" y="70" class="node-label on" text-anchor="middle" style="font-size:9px">Reconcile upsert</text>
+
+          <!-- into the store -->
+          <path d="M 663 84 L 663 130" class="stroke-accent flow" stroke-width="1.3" marker-end="url(#arrow3a)"/>
+
+          <!-- store, code memory cylinder -->
+          <g class="hot" tabindex="0" data-id="m-memory">
+            <g transform="translate(590,132)">
+              <path d="M0,8 A73,8 0 0 1 146,8 L146,52 A73,8 0 0 1 0,52 Z" class="fill-surface stroke-line edge" stroke-width="1.3"/>
+              <ellipse cx="73" cy="8" rx="73" ry="8" class="fill-surface stroke-line edge" stroke-width="1.3"/>
+            </g>
+          </g>
+          <text x="663" y="212" class="node-label" text-anchor="middle">Code memory (pgvector + tsvector)</text>
+
+          <!-- LANE B: retrieval, per task, bottom -->
+          <text x="30" y="266" class="node-label on" text-anchor="start" style="font-size:10px">RETRIEVE (every task)</text>
+
+          <g class="hot" tabindex="0" data-id="mr-query">
+            <rect x="40" y="290" width="110" height="36" rx="6" class="fill-surface stroke-line edge" stroke-width="1.2"/>
+          </g>
+          <text x="95" y="312" class="node-label" text-anchor="middle" style="font-size:9px">Diff / query</text>
+
+          <path d="M 150 300 Q 220 280 280 292" fill="none" class="stroke-line flow" stroke-width="1.1" marker-end="url(#arrow3)"/>
+          <path d="M 150 318 Q 220 340 280 330" fill="none" class="stroke-line flow" stroke-width="1.1" marker-end="url(#arrow3)"/>
+
+          <g class="hot" tabindex="0" data-id="mr-vector">
+            <rect x="282" y="276" width="110" height="34" rx="6" class="fill-surface stroke-line edge" stroke-width="1.2"/>
+          </g>
+          <text x="337" y="297" class="node-label" text-anchor="middle" style="font-size:9px">Vector search</text>
+
+          <g class="hot" tabindex="0" data-id="mr-keyword">
+            <rect x="282" y="316" width="110" height="34" rx="6" class="fill-surface stroke-line edge" stroke-width="1.2"/>
+          </g>
+          <text x="337" y="337" class="node-label" text-anchor="middle" style="font-size:9px">Keyword search</text>
+
+          <!-- both feed the store above -->
+          <path d="M 337 276 Q 400 200 590 158" fill="none" class="stroke-line" stroke-width="1" stroke-dasharray="2 5"/>
+          <path d="M 337 350 Q 400 220 590 165" fill="none" class="stroke-line" stroke-width="1" stroke-dasharray="2 5"/>
+
+          <path d="M 392 292 Q 440 300 470 306" fill="none" class="stroke-line flow" stroke-width="1.1" marker-end="url(#arrow3)"/>
+          <path d="M 392 332 Q 440 320 470 310" fill="none" class="stroke-line flow" stroke-width="1.1" marker-end="url(#arrow3)"/>
+
+          <g class="hot" tabindex="0" data-id="mr-rrf">
+            <circle cx="500" cy="308" r="26" class="fill-accent-soft"/>
+            <circle cx="500" cy="308" r="18" class="fill-surface stroke-accent edge" stroke-width="1.5"/>
+          </g>
+          <text x="500" y="352" class="node-label on" text-anchor="middle" style="font-size:9px">RRF fuse</text>
+
+          <path d="M 526 308 L 600 308" class="stroke-accent flow" stroke-width="1.3" marker-end="url(#arrow3a)"/>
+
+          <g class="hot" tabindex="0" data-id="mr-context">
+            <rect x="602" y="288" width="120" height="40" rx="8" class="fill-accent-soft stroke-accent edge" stroke-width="1.5"/>
+          </g>
+          <text x="662" y="312" class="node-label on" text-anchor="middle" style="font-size:9px">Top-K → Context</text>
+
+          <path d="M 662 328 L 662 372" class="stroke-accent flow" stroke-width="1.3" marker-end="url(#arrow3a)"/>
+          <g class="hot" tabindex="0" data-id="m-agent">
+            <circle cx="662" cy="396" r="20" class="fill-surface stroke-accent edge" stroke-width="1.6"/>
+            <circle cx="662" cy="396" r="4" class="fill-accent dot"/>
+          </g>
+          <text x="662" y="436" class="node-label" text-anchor="middle">Agent</text>
+
+          <!-- explicit note: no write-back -->
+          <g class="hot" tabindex="0" data-id="mr-noloop">
+            <text x="30" y="400" class="node-label" text-anchor="start" style="font-size:9px">No write-back:</text>
+            <text x="30" y="414" class="node-label" text-anchor="start" style="font-size:9px">a review never edits</text>
+            <text x="30" y="428" class="node-label" text-anchor="start" style="font-size:9px">code memory.</text>
+          </g>
+        </svg>
+      </div>
+
+      <p class="caption">
+        Indexing is structural, not fixed-width — chunks split on definitions so a
+        function and its signature stay together, and content hashes make a re-index
+        of an unchanged file free. Retrieval fuses <b>vector</b> and <b>keyword</b> rankings
+        by reciprocal rank, so an embedding that smoothed away an identifier is
+        still caught by the other lane.
+        <span style="display:block; margin-top:6px; font-size:12.5px;">Hover a node for detail.</span>
+      </p>
+    </div>
+  </section>
+
+  <!-- ============================================================= 06 : ARCHITECTURE EXPLORER (new) -->
+  <section class="panel" id="explorer">
+    <div class="frame">
+      <div class="eyebrow"><span class="num">06</span><span class="label">Architecture Explorer</span></div>
+      <h1>Four layers, nine components</h1>
+
+      <div class="diagram">
+        <svg viewBox="0 0 900 460" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="arrowX" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L6,3 L0,6 Z" class="fill-dim"/>
+            </marker>
+          </defs>
+
+          <!-- layer bands -->
+          <text x="20" y="34" class="node-label" text-anchor="start" style="letter-spacing:.16em">EXTERNAL</text>
+          <line x1="20" y1="44" x2="880" y2="44" class="stroke-line" stroke-width="1" stroke-dasharray="1 5"/>
+
+          <text x="20" y="104" class="node-label" text-anchor="start" style="letter-spacing:.16em">INGRESS</text>
+          <line x1="20" y1="114" x2="880" y2="114" class="stroke-line" stroke-width="1" stroke-dasharray="1 5"/>
+
+          <text x="20" y="200" class="node-label" text-anchor="start" style="letter-spacing:.16em">COMPUTE</text>
+          <line x1="20" y1="210" x2="880" y2="210" class="stroke-line" stroke-width="1" stroke-dasharray="1 5"/>
+
+          <text x="20" y="330" class="node-label" text-anchor="start" style="letter-spacing:.16em">DATA</text>
+          <line x1="20" y1="340" x2="880" y2="340" class="stroke-line" stroke-width="1" stroke-dasharray="1 5"/>
+
+          <text x="20" y="410" class="node-label" text-anchor="start" style="letter-spacing:.16em">SURFACE</text>
+
+          <!-- EXTERNAL: Azure DevOps, Azure AI Foundry, Azure OpenAI -->
+          <g class="hot" tabindex="0" data-id="x-ado">
+            <rect x="40" y="56" width="150" height="34" rx="7" class="fill-surface stroke-line edge" stroke-width="1.2"/>
+          </g>
+          <text x="115" y="77" class="node-label" text-anchor="middle" style="font-size:9px">Azure DevOps</text>
+
+          <g class="hot" tabindex="0" data-id="x-foundry">
+            <rect x="375" y="56" width="150" height="34" rx="7" class="fill-surface stroke-line edge" stroke-width="1.2"/>
+          </g>
+          <text x="450" y="77" class="node-label" text-anchor="middle" style="font-size:9px">Azure AI Foundry (Kimi K2)</text>
+
+          <g class="hot" tabindex="0" data-id="x-openai">
+            <rect x="710" y="56" width="150" height="34" rx="7" class="fill-surface stroke-line edge" stroke-width="1.2"/>
+          </g>
+          <text x="785" y="77" class="node-label" text-anchor="middle" style="font-size:9px">Azure OpenAI (embeddings)</text>
+
+          <!-- INGRESS: Webhook, Poller -->
+          <path d="M 90 90 L 90 126" class="stroke-line flow" stroke-width="1.1" marker-end="url(#arrowX)"/>
+          <path d="M 200 90 L 130 126" class="stroke-line flow" stroke-width="1.1" marker-end="url(#arrowX)"/>
+
+          <g class="hot" tabindex="0" data-id="x-webhook">
+            <rect x="40" y="128" width="140" height="40" rx="8" class="fill-surface stroke-line edge" stroke-width="1.3"/>
+          </g>
+          <text x="110" y="152" class="node-label" text-anchor="middle" style="font-size:9px">Webhook</text>
+          <text x="110" y="164" class="node-label" text-anchor="middle" style="font-size:8px">FastAPI ingress</text>
+
+          <g class="hot" tabindex="0" data-id="x-poller">
+            <rect x="200" y="128" width="140" height="40" rx="8" class="fill-surface stroke-line edge" stroke-width="1.3"/>
+          </g>
+          <text x="270" y="152" class="node-label" text-anchor="middle" style="font-size:9px">Poller</text>
+          <text x="270" y="164" class="node-label" text-anchor="middle" style="font-size:8px">sweeps on interval</text>
+
+          <!-- COMPUTE: Queue, Engine, Specialists -->
+          <path d="M 110 168 L 110 216" class="stroke-line flow" stroke-width="1.1" marker-end="url(#arrowX)"/>
+          <path d="M 270 168 L 270 216" class="stroke-line flow" stroke-width="1.1" marker-end="url(#arrowX)"/>
+
+          <g class="hot" tabindex="0" data-id="x-queue">
+            <rect x="40" y="218" width="230" height="40" rx="8" class="fill-surface stroke-line edge" stroke-width="1.3"/>
+          </g>
+          <text x="155" y="242" class="node-label" text-anchor="middle" style="font-size:9px">Redis + ARQ queue</text>
+
+          <path d="M 155 258 L 155 296" class="stroke-line flow" stroke-width="1.2" marker-end="url(#arrowX)"/>
+
+          <g class="hot" tabindex="0" data-id="x-worker">
+            <rect x="40" y="298" width="230" height="34" rx="8" class="fill-accent-soft stroke-accent edge" stroke-width="1.4"/>
+          </g>
+          <text x="155" y="320" class="node-label on" text-anchor="middle" style="font-size:9px">Worker: engine + 5 specialists</text>
+
+          <path d="M 340 168 Q 500 200 500 216" fill="none" class="stroke-line flow" stroke-width="1.1" marker-end="url(#arrowX)"/>
+
+          <g class="hot" tabindex="0" data-id="x-api">
+            <rect x="400 " y="218" width="200" height="40" rx="8" class="fill-surface stroke-line edge" stroke-width="1.3"/>
+          </g>
+          <text x="500" y="242" class="node-label" text-anchor="middle" style="font-size:9px">FastAPI (board, HITL, index)</text>
+
+          <path d="M 155 332 Q 300 350 380 332" fill="none" class="stroke-line" stroke-width="1" stroke-dasharray="2 5"/>
+          <path d="M 500 258 L 500 296" class="stroke-line flow" stroke-width="1.1" marker-end="url(#arrowX)"/>
+          <g class="hot" tabindex="0" data-id="x-indexer">
+            <rect x="400" y="298" width="200" height="34" rx="8" class="fill-surface stroke-line edge" stroke-width="1.3"/>
+          </g>
+          <text x="500" y="320" class="node-label" text-anchor="middle" style="font-size:9px">Indexer (manual, on-demand)</text>
+
+          <!-- specialists calling foundry/openai -->
+          <path d="M 200 298 Q 300 60 450 90" fill="none" class="stroke-line" stroke-width="1" stroke-dasharray="2 5" marker-end="url(#arrowX)"/>
+          <path d="M 500 298 Q 600 200 750 90" fill="none" class="stroke-line" stroke-width="1" stroke-dasharray="2 5" marker-end="url(#arrowX)"/>
+
+          <!-- DATA: Postgres -->
+          <path d="M 155 332 L 155 356" class="stroke-line flow" stroke-width="1.1" marker-end="url(#arrowX)"/>
+          <path d="M 500 332 L 500 356" class="stroke-line flow" stroke-width="1.1" marker-end="url(#arrowX)"/>
+
+          <g class="hot" tabindex="0" data-id="x-postgres">
+            <g transform="translate(320,358)">
+              <path d="M0,8 A140,8 0 0 1 280,8 L280,50 A140,8 0 0 1 0,50 Z" class="fill-surface stroke-line edge" stroke-width="1.3"/>
+              <ellipse cx="140" cy="8" rx="140" ry="8" class="fill-surface stroke-line edge" stroke-width="1.3"/>
+            </g>
+          </g>
+          <text x="460" y="440" class="node-label" text-anchor="middle">PostgreSQL + pgvector — reviews, findings, HITL, code chunks</text>
+
+          <!-- SURFACE: Dashboard -->
+          <path d="M 700 380 Q 800 400 800 400" fill="none" class="stroke-line flow" stroke-width="1.1" marker-end="url(#arrowX)"/>
+          <path d="M 500 258 Q 800 300 800 386" fill="none" class="stroke-line" stroke-width="1" stroke-dasharray="2 5" marker-end="url(#arrowX)"/>
+
+          <g class="hot" tabindex="0" data-id="x-dashboard">
+            <rect x="730" y="388" width="130" height="40" rx="8" class="fill-surface stroke-line edge" stroke-width="1.3"/>
+          </g>
+          <text x="795" y="412" class="node-label" text-anchor="middle" style="font-size:9px">Next.js dashboard</text>
+        </svg>
+      </div>
+
+      <p class="caption">
+        Zoomed out, it's four layers: <b>ingress</b> decides a review is needed,
+        <b>compute</b> runs it, <b>data</b> is the one place state actually lives, and the
+        <b>surface</b> is where a human sees and directs all of it.
+        <span style="display:block; margin-top:6px; font-size:12.5px;">Hover a node for detail.</span>
+      </p>
+    </div>
+  </section>
+
+  <!-- ============================================================= 07 -->
+  <section class="panel" id="stack">
+    <div class="frame">
+      <div class="eyebrow"><span class="num">07</span><span class="label">Why</span></div>
+
+      <div class="statements">
+        <p>Grounded, not guessing.</p>
+        <p>A human decides, always.</p>
+        <p>One task, one record.</p>
+        <p>Cancel or re-review, anytime.</p>
+      </div>
+
+      <p class="stack-line">
+        FastAPI<span class="sep">·</span>Next.js<span class="sep">·</span>PostgreSQL + pgvector<span class="sep">·</span>Redis + ARQ<span class="sep">·</span>Azure DevOps<span class="sep">·</span>Azure AI Foundry<span class="sep">·</span>Azure OpenAI
+      </p>
+    </div>
+  </section>
+
+</div>
+
+<script>
+(function(){
+  var TIPS = {
+    trigger: {
+      t: "Trigger",
+      pts: [
+        "<b>Poller</b> — sweeps Azure DevOps on a short interval, catches anything the webhook missed",
+        "<b>Webhook</b> — a service hook fires on PR open/update, near-instant",
+        "<b>Idempotency</b> — same commit ⇒ same key ⇒ claimed once, whichever trigger gets there first"
+      ]
+    },
+    /* ---------------- Loop ---------------- */
+    "l-claim": {
+      t: "Claim",
+      b: "The idempotency key is derived from the PR's head commit. Whichever trigger — webhook or poller — reaches it first claims the row; the other sees it already taken and stops."
+    },
+    "l-prepare": {
+      t: "Prepare",
+      b: "Fetches the diff and linked work items once. The only stage that can abort the review outright — nothing to review, or the diff couldn't be fetched."
+    },
+    "l-fanout": {
+      t: "Fan-out",
+      b: "Runs all five specialists concurrently. Everything expensive in the loop happens here; the stages either side exist mostly to give a checkpoint somewhere honest to sit."
+    },
+    "l-gate": {
+      t: "Gate",
+      b: "Decides auto-post, escalate, or queue for a human. Every later stage degrades instead of aborting — a failed gate still yields a persisted review a human can read."
+    },
+    "l-publish": {
+      t: "Publish",
+      b: "Posts comment threads, or hands the outcome to the human queue. Idempotent across re-runs: a re-review on an updated PR won't duplicate a comment the author already read."
+    },
+    "l-checkpoint": {
+      t: "Checkpoint",
+      b: "Saved to Redis after every stage completes. Holds only what's JSON-serialisable — durable data, not live client objects — so a resume rebuilds connections instead of restoring them."
+    },
+    "l-resume": {
+      t: "Resume",
+      b: "A worker that dies mid-review restarts from the last saved checkpoint: completed stages are skipped, the rest replay. The webhook is never re-delivered just to make this work."
+    },
+    "l-cancel": {
+      t: "Cancelled",
+      b: "Checked before every single stage runs. A task cancelled while queued or mid-review stops cleanly between steps — never mid model-call, never leaving a partial post behind."
+    },
+    /* ---------------- Agents Engine ---------------- */
+    "e-node": {
+      t: "Node",
+      b: "name + async fn + optional flag. The five review stages are just five of these — the engine doesn't know or care what a node does, only whether it's allowed to fail quietly."
+    },
+    "e-native": {
+      t: "Native engine",
+      b: "Sequential nodes, checkpointed between each; fan-out lives inside one node. Correct and cheap for today's load — a five-way fan-out with one checkpoint between phases."
+    },
+    "e-guard": {
+      t: "_guarded()",
+      b: "Wraps every node: checks the review's status in Postgres before running it. If it's been marked cancelled, the node raises instead of executing — the loop stops between steps."
+    },
+    "e-optional": {
+      t: "optional = True",
+      b: "A failed optional node is logged and skipped — the review continues. The docs specialist going down should not cost you the security findings."
+    },
+    "e-required": {
+      t: "optional = False",
+      b: "A failed required node saves a checkpoint, then re-raises. Nothing in the review is silently lost — the failure is visible and the state is durable."
+    },
+    "e-checkpointer": {
+      t: "Checkpointer",
+      b: "A two-method protocol: save / load / clear. RedisCheckpointer backs it in production; NullCheckpointer makes tests and single-shot local runs correct with zero durability."
+    },
+    "e-swap": {
+      t: "Swap-in engines",
+      b: "Temporal or LangGraph implement the same WorkflowEngine protocol. Nothing above build_nodes() would need to change — only which engine build_engine() returns."
+    },
+    /* ---------------- Specialists (existing) ---------------- */
+    context: {
+      t: "Context",
+      b: "One shared block — PR diff, description and branch, rendered once so it's byte-identical for every specialist and the prompt cache actually hits. Story alone also gets linked Azure Boards items; four of five are grounded with chunks retrieved from code memory."
+    },
+    security: {
+      t: "Security",
+      b: "Injection, leaked secrets, missing authN/Z, unsafe data handling (path traversal, SSRF, XXE), sensitive data reaching logs. Not style, not tests — leaves those alone even when it notices them."
+    },
+    quality: {
+      t: "Code quality",
+      b: "Logic defects, race conditions and unguarded shared state, swallowed errors, broken contracts — null where the caller can't handle it, silent API changes. Correctness first, maintainability second."
+    },
+    tests: {
+      t: "Tests",
+      b: "Changed behaviour with no test, untested edge cases, weakened assertions, tests that can't fail, fragile tests. Judges coverage of the diff — not whether the logic itself is right."
+    },
+    docs: {
+      t: "Docs",
+      b: "Only a public contract that isn't obvious from its signature, or documentation the diff just made false. Deliberately near-silent — most clean diffs get nothing from this one."
+    },
+    story: {
+      t: "Story",
+      b: "The only specialist that sees linked Azure Boards work items: no traceable story, an unmet acceptance criterion, scope drift, or a change that contradicts what was asked."
+    },
+    aggregate: {
+      t: "Aggregate",
+      b: "The same defect flagged twice becomes one finding, kept at the stronger severity with both names credited. Confidence is a deterministic, coverage-weighted score — not the model grading its own work; an LLM only writes the summary after, and can pull that score down, never up."
+    },
+    gate: {
+      t: "Autonomy gate",
+      b: "Human approval is checked first and wins unconditionally. Otherwise: any CRITICAL finding escalates, low confidence queues, three or more failed specialists block posting as a coverage problem, not a review."
+    },
+    publish: {
+      t: "Publish",
+      b: "Only reachable with human approval switched off. The same kill switch is checked again immediately before posting — a bug here means an unrecoverable comment on someone else's pull request."
+    },
+    human: {
+      t: "Human queue",
+      b: "Where every review lands today. A person reads the findings, keeps or drops individual ones, and only their approval triggers the post."
+    },
+    /* ---------------- Memory strategy ---------------- */
+    "mm-repo": {
+      t: "Repo tree",
+      b: "Listed once at a fixed commit, fetched straight from Azure DevOps — no checkout. One manual run, never a scheduler, poller, or webhook."
+    },
+    "mm-boundary": {
+      t: "Boundary split",
+      b: "A language-agnostic \"this line starts a new top-level thing\" heuristic — def, class, function, func. Keeps a definition and its signature in the same chunk, split further only if it's very long."
+    },
+    "mm-hash": {
+      t: "Content hash",
+      b: "Each chunk's id is content-addressed. Unchanged content short-circuits before it ever reaches the embedding API — a re-index of a mostly-unchanged repo is cheap."
+    },
+    "mm-embed": {
+      t: "Embed batch",
+      b: "text-embedding-3-large, truncated to 256 dimensions via Matryoshka truncation — recall close to full 3072 dims for code search, at a fraction of the index size."
+    },
+    "mm-reconcile": {
+      t: "Reconcile upsert",
+      b: "Because chunk ids are content-addressed, editing a function produces a new id. Old rows for that file whose id no longer appears are deleted — otherwise stale code stays retrievable forever."
+    },
+    "m-memory": {
+      t: "Code memory",
+      b: "Vector + keyword index over the repository, merged by reciprocal rank fusion. Grounding for the codebase itself — not a memory of past reviews, and nothing a task writes to."
+    },
+    "mr-query": {
+      t: "Diff / query",
+      b: "The changed lines for this one task, plus identifiers extracted from them. Fetched once and shared byte-for-byte across every specialist."
+    },
+    "mr-vector": {
+      t: "Vector search",
+      b: "Finds \"the function that validates tokens\" even when the diff never says \"token\" — semantic proximity in embedding space."
+    },
+    "mr-keyword": {
+      t: "Keyword search",
+      b: "Postgres full-text search over extracted identifiers. Finds validate_jwt_token when the embedding has smoothed the identifier away."
+    },
+    "mr-rrf": {
+      t: "RRF fuse",
+      b: "Reciprocal rank fusion: 1/(k+rank) per lane, summed. Merges two rankings whose raw scores are not comparable, without needing to be."
+    },
+    "mr-context": {
+      t: "Top-K → Context",
+      b: "The fused, deduplicated result assembled fresh per task and kept nowhere between tasks. Retrieval failing here just means the agents reason over the diff alone."
+    },
+    "m-agent": {
+      t: "Agent",
+      b: "Runs the five specialists and the aggregator against this one context, once."
+    },
+    "mr-noloop": {
+      t: "No write-back",
+      b: "There's no false-positive memory in this system: a review's findings never feed back into code memory or change how the next review is judged."
+    },
+    /* ---------------- Architecture explorer ---------------- */
+    "x-ado": {
+      t: "Azure DevOps",
+      b: "Source of truth for pull requests, diffs, and linked work items. Also where every finding is ultimately posted, as comment threads on the PR."
+    },
+    "x-foundry": {
+      t: "Azure AI Foundry",
+      b: "Hosts Kimi K2, the reasoning model routed to for specialist review and the aggregator's summary. Swappable behind the LLM protocol without touching the engine."
+    },
+    "x-openai": {
+      t: "Azure OpenAI",
+      b: "text-embedding-3-large for code memory. The only external call the indexing lane makes — retrieval itself never leaves the database."
+    },
+    "x-webhook": {
+      t: "Webhook",
+      b: "A FastAPI route Azure DevOps calls on PR open/update. Parses, records, hands off — never does review work itself, so Azure DevOps always sees a fast 200."
+    },
+    "x-poller": {
+      t: "Poller",
+      b: "The alternative ingress for anywhere Azure DevOps can't reach inbound — a laptop, a closed network. Same idempotency table as the webhook, so both can run side by side safely."
+    },
+    "x-queue": {
+      t: "Redis + ARQ queue",
+      b: "The boundary is deliberately thin: one function, one serialisable payload per job. Anything durable was already written to Postgres by the trigger before the job is enqueued."
+    },
+    "x-worker": {
+      t: "Worker",
+      b: "Runs the native engine's five nodes, which in turn fan out to the five specialists. Jobs that exhaust retries land in a dead-letter table, visibly failed rather than silently missing."
+    },
+    "x-api": {
+      t: "FastAPI",
+      b: "The board, the HITL decision endpoints, cancel, re-review, and the manual indexing trigger — every place a human directs the system rather than just watching it."
+    },
+    "x-indexer": {
+      t: "Indexer",
+      b: "Manual and on-demand only. Chunks, hashes, embeds, and reconciles a repository into code memory — nothing here is ever called by a scheduler, poller, or webhook."
+    },
+    "x-postgres": {
+      t: "PostgreSQL + pgvector",
+      b: "The one place state actually lives: reviews, findings, HITL decisions, webhook delivery claims, and the code_chunks table with its vector column. Everything else is either transient (queue) or derived (dashboard)."
+    },
+    "x-dashboard": {
+      t: "Next.js dashboard",
+      b: "Reads the board and a review's full findings, and is the only place a human approves, rejects, cancels, or re-triggers a review or an index run."
+    }
+  };
+
+  var tip = document.getElementById('tip');
+  document.querySelectorAll('.hot').forEach(function(node){
+    var data = TIPS[node.getAttribute('data-id')];
+    if(!data) return;
+
+    var place = function(){
+      var r = node.getBoundingClientRect();
+      var body = data.pts
+        ? '<ul class="t-points">' + data.pts.map(function(p){ return '<li>' + p + '</li>'; }).join('') + '</ul>'
+        : '<span class="t-body">' + data.b + '</span>';
+      tip.innerHTML = '<span class="t-title">' + data.t + '</span>' + body;
+      var x = Math.min(Math.max(r.left + r.width / 2, 140), window.innerWidth - 140);
+      tip.style.left = x + 'px';
+      tip.style.top = (r.top - 6) + 'px';
+      tip.classList.add('show');
+    };
+    var hide = function(){ tip.classList.remove('show'); };
+
+    node.addEventListener('mouseenter', place);
+    node.addEventListener('mouseleave', hide);
+    node.addEventListener('focus', place);
+    node.addEventListener('blur', hide);
+  });
+
+  var rail = document.getElementById('rail');
+  var panels = Array.from(document.querySelectorAll('.panel'));
+  var dots = Array.from(document.querySelectorAll('.progress a'));
+  var io = new IntersectionObserver(function(entries){
+    entries.forEach(function(e){
+      if(e.isIntersecting){
+        var i = panels.indexOf(e.target);
+        dots.forEach(function(d,di){ d.classList.toggle('active', di===i); });
+      }
+    });
+  }, { root: rail, threshold: 0.6 });
+  panels.forEach(function(p){ io.observe(p); });
+})();
+</script>
+
+</body></html>
